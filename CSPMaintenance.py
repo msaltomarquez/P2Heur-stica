@@ -1,4 +1,5 @@
 import sys
+from constraint import Problem
 
 def leer_entrada(ruta_entrada):
     """
@@ -53,6 +54,48 @@ def leer_entrada(ruta_entrada):
 
     return franjas_horarias, tamano_matriz, talleres_std, talleres_spc, parkings, aviones
 
+def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, aviones):
+    # Crear el problema CSP
+    problem = Problem()
+    
+    # Dominio completo: todas las ubicaciones posibles
+    dominio = talleres_std + talleres_spc + parkings
+    
+    # Crear variables para cada avión en cada franja horaria
+    for avion in aviones:
+        for t in range(franjas_horarias):
+            variable = f"Avion_{avion['id']}_t{t}"
+            problem.addVariable(variable, dominio)
+    
+    # Restricción básica: Cada avión debe estar en una única ubicación en cada franja horaria
+    def ubicacion_valida(*asignaciones):
+        # Cada ubicación asignada debe ser única
+        return len(asignaciones) == len(set(asignaciones))
+    
+    for t in range(franjas_horarias):
+        problem.addConstraint(
+            ubicacion_valida,
+            [f"Avion_{avion['id']}_t{t}" for avion in aviones]
+        )
+    
+    return problem
+
+def resolver_y_mostrar(problem, max_soluciones=3):
+    soluciones = []
+    for solucion in problem.getSolutionIter():
+        soluciones.append(solucion)
+        if len(soluciones) >= max_soluciones:
+            break
+
+    if not soluciones:
+        print("No se encontraron soluciones.")
+    else:
+        print(f"Se encontraron {len(soluciones)} soluciones (limitado a {max_soluciones}).")
+        for idx, solucion in enumerate(soluciones):
+            print(f"\nSolución {idx + 1}:")
+            for key, value in solucion.items():
+                print(f"{key} -> {value}")
+
 def main():
     """
     Función principal para ejecutar el código desde la línea de comandos.
@@ -71,6 +114,14 @@ def main():
     print("Talleres especialistas:", talleres_spc)
     print("Parkings:", parkings)
     print("Aviones:", aviones)
+
+    print("\nDefiniendo el modelo CSP...")
+    problem = definir_modelo_csp(
+        franjas_horarias, talleres_std, talleres_spc, parkings, aviones
+    )
+
+    print("\nResolviendo el CSP...")
+    resolver_y_mostrar(problem, max_soluciones=3)  # Cambia el número de soluciones aquí según necesidad
 
 if __name__ == "__main__":
     main()
