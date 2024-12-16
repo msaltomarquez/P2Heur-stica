@@ -88,7 +88,7 @@ def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, a
             # Agregar variable y dominio al problema
             problem.addVariable(variable, dominio)
 
-
+    # Restricción de talleres: no más de 2 aviones, no más de un JMB
     def restriccion_talleres(*valores):
         conteo = {}
         for valor in valores:
@@ -102,65 +102,57 @@ def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, a
             # Contar aviones en la posición
             conteo[posicion][tipo_avion] += 1
 
-            # Si hay más de un JMB en la misma posición, no es válido
+            # Restricciones específicas
             if conteo[posicion]["JMB"] > 1:
-                return False
-
-            # Si hay un JMB, no puede haber otros aviones
-            if conteo[posicion]["JMB"] > 0 and (conteo[posicion]["STD"] > 0):
-                return False
-
-            # Si hay más de dos aviones en total, no es válido
+                return False  # No más de un JMB
+            if conteo[posicion]["JMB"] > 0 and conteo[posicion]["STD"] > 0:
+                return False  # Un JMB no puede coexistir con un STD
             if conteo[posicion]["STD"] + conteo[posicion]["JMB"] > 2:
-                return False
+                return False  # No más de dos aviones en total
         
         return True
 
-
-    # Aplicar la restricción para cada franja horaria
     for franja in range(franjas_horarias):
         variables_franja = [f"Avion_{avion['id']}_t{franja}" for avion in aviones]
         problem.addConstraint(restriccion_talleres, variables_franja)
 
-
+    # Función de criterio de asignación lógica
     def criterio_asignacion_logica(valor, estado_ubicaciones, franja):
-        """
-        Evalúa una asignación tentativa considerando el estado de ocupación de las ubicaciones.
-        - Aviones sin tareas -> Parking libre.
-        - Aviones con tareas de tipo 2 -> Taller especial (SPC) disponible, si no, otro lugar.
-        - Aviones con solo tareas de tipo 1 -> Taller estándar (STD) o especial (SPC) disponible.
-        """
         posicion = valor["posicion"]
         tipo_ubicacion = valor["tipo_ubicacion"]
         tareas_tipo_1 = valor["tareas_tipo_1"]
         tareas_tipo_2 = valor["tareas_tipo_2"]
-
-        # Verificar si la posición está ocupada
         ocupacion = estado_ubicaciones[franja][posicion]["ocupado"]
 
-        # Aviones sin tareas deben estar en un parking libre
+        print(f"Evaluando Avión en {posicion} ({tipo_ubicacion}) - "
+              f"Tareas Tipo 1: {tareas_tipo_1}, Tipo 2: {tareas_tipo_2}, Ocupado: {ocupacion}")
+
         if tareas_tipo_1 == 0 and tareas_tipo_2 == 0:
             return tipo_ubicacion == "PRK" and not ocupacion
-
-        # Aviones con tareas de tipo 2 deben ir a talleres especiales
         if tareas_tipo_2 > 0:
-            if tipo_ubicacion == "SPC" and not ocupacion:
-                return True
-            # Si no hay talleres especiales disponibles, permitir cualquier lugar libre
-            return not ocupacion
-
-        # Aviones con solo tareas de tipo 1 pueden estar en STD o SPC
+            return tipo_ubicacion == "SPC" and not ocupacion
         if tareas_tipo_1 > 0:
             return tipo_ubicacion in ["STD", "SPC"] and not ocupacion
+        return False
 
-        # Si llega aquí, significa que no hay talleres disponibles
-        # Permitir asignación a un parking como opción de respaldo
-        return tipo_ubicacion == "PRK" and not ocupacion
-    
-        
-    # Aplicar el criterio lógico de asignación para cada avión y franja horaria
-    for avion in aviones:
-        for franja in range(franjas_horarias):
+    # Función para reducir tareas de aviones al final de cada franja horaria
+    def reducir_tareas(aviones, estado_ubicaciones, franja):
+        print(f"\n### Reducción de tareas - Franja {franja} ###")
+        for avion in aviones:
+            print(f"Avión {avion['id']} - Tareas antes: Tipo 1 = {avion['tareas_tipo_1']}, Tipo 2 = {avion['tareas_tipo_2']}")
+            for posicion, datos in estado_ubicaciones[franja].items():
+                if datos["id_avion"] == avion["id"]:
+                    print(f"  Avión {avion['id']} está en {posicion} ({datos['tipo_ubicacion']})")
+                    if datos["tipo_ubicacion"] == "SPC" and avion["tareas_tipo_2"] > 0:
+                        avion["tareas_tipo_2"] -= 1
+                        print(f"    Tarea tipo 2 reducida. Nueva cantidad: {avion['tareas_tipo_2']}")
+                    elif datos["tipo_ubicacion"] == "STD" and avion["tareas_tipo_1"] > 0:
+                        avion["tareas_tipo_1"] -= 1
+                        print(f"    Tarea tipo 1 reducida. Nueva cantidad: {avion['tareas_tipo_1']}")
+
+    # Aplicar restricciones y reducción de tareas por franja
+    for franja in range(franjas_horarias):
+        for avion in aviones:
             variable = f"Avion_{avion['id']}_t{franja}"
 
             def restriccion_asignacion(valor, estado=estado_ubicaciones, t=franja):
@@ -168,7 +160,11 @@ def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, a
 
             problem.addConstraint(restriccion_asignacion, [variable])
 
-    return problem  
+        # Llamada a la función para reducir tareas después de asignaciones
+        reducir_tareas(aviones, estado_ubicaciones, franja)
+
+    return problem
+
 
 
 def resolver_y_mostrar(problem, max_soluciones):
