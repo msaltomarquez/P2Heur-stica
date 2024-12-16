@@ -21,12 +21,10 @@ def leer_entrada(ruta_entrada):
         Maneja casos con espacios extra o formatos inesperados.
         """
         coordenadas = linea.split(":")[1].strip()
-        # Eliminar todos los espacios dentro de las coordenadas y luego procesarlas
         coordenadas_limpias = coordenadas.replace(" ", "").split(")(")
         coordenadas_validas = []
         for coord in coordenadas_limpias:
             try:
-                # Asegurarse de que cada coordenada sea válida
                 coord = coord.strip("()")
                 coordenadas_validas.append(tuple(map(int, coord.split(","))))
             except ValueError:
@@ -41,7 +39,7 @@ def leer_entrada(ruta_entrada):
     aviones = []
     for linea in lineas[5:]:
         partes = linea.strip().split("-")
-        if len(partes) == 5:  # Asegurarse de que la línea tiene todos los datos
+        if len(partes) == 5:
             aviones.append({
                 "id": int(partes[0]),
                 "tipo": partes[1],
@@ -57,30 +55,123 @@ def leer_entrada(ruta_entrada):
 def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, aviones):
     # Crear el problema CSP
     problem = Problem()
-    
-    # Dominio completo: todas las ubicaciones posibles
-    dominio = talleres_std + talleres_spc + parkings
-    
-    # Crear variables para cada avión en cada franja horaria
-    for avion in aviones:
-        for t in range(franjas_horarias):
-            variable = f"Avion_{avion['id']}_t{t}"
-            problem.addVariable(variable, dominio)
-    
-    # Restricción básica: Cada avión debe estar en una única ubicación en cada franja horaria
-    def ubicacion_valida(*asignaciones):
-        # Cada ubicación asignada debe ser única
-        return len(asignaciones) == len(set(asignaciones))
-    
-    for t in range(franjas_horarias):
-        problem.addConstraint(
-            ubicacion_valida,
-            [f"Avion_{avion['id']}_t{t}" for avion in aviones]
-        )
-    
-    return problem
 
-def resolver_y_mostrar(problem, max_soluciones=3):
+    # Estructura auxiliar para registrar las posiciones ocupadas en cada franja horaria
+    estado_ubicaciones = {
+        franja: {
+            (x, y): {"ocupado": False, "id_avion": None, "tipo_ubicacion": None}
+            for x, y in parkings + talleres_std + talleres_spc
+        }
+        for franja in range(franjas_horarias)
+    }
+
+    # Definir variables y dominios
+    for avion in aviones:
+        for franja in range(franjas_horarias):
+            variable = f"Avion_{avion['id']}_t{franja}"
+            dominio = []
+
+            # Construir dominio como lista de diccionarios con información detallada
+            for posicion in parkings + talleres_std + talleres_spc:
+                if posicion in talleres_spc or posicion in talleres_std:
+                    tipo_ubicacion = "SPC" if posicion in talleres_spc else "STD"
+                else:
+                    tipo_ubicacion = "PRK"
+                dominio.append({
+                    "posicion": posicion,
+                    "tipo_ubicacion": tipo_ubicacion,
+                    "tipo_avion": avion['tipo'],
+                    "tareas_tipo_1": avion['tareas_tipo_1'],
+                    "tareas_tipo_2": avion['tareas_tipo_2']
+                })
+            
+            # Agregar variable y dominio al problema
+            problem.addVariable(variable, dominio)
+
+
+    def restriccion_talleres(*valores):
+        conteo = {}
+        for valor in valores:
+            posicion = valor["posicion"]
+            tipo_avion = valor["tipo_avion"]
+            
+            # Inicializar conteo para la posición
+            if posicion not in conteo:
+                conteo[posicion] = {"STD": 0, "JMB": 0}
+            
+            # Contar aviones en la posición
+            conteo[posicion][tipo_avion] += 1
+
+            # Si hay más de un JMB en la misma posición, no es válido
+            if conteo[posicion]["JMB"] > 1:
+                return False
+
+            # Si hay un JMB, no puede haber otros aviones
+            if conteo[posicion]["JMB"] > 0 and (conteo[posicion]["STD"] > 0):
+                return False
+
+            # Si hay más de dos aviones en total, no es válido
+            if conteo[posicion]["STD"] + conteo[posicion]["JMB"] > 2:
+                return False
+        
+        return True
+
+
+    # Aplicar la restricción para cada franja horaria
+    for franja in range(franjas_horarias):
+        variables_franja = [f"Avion_{avion['id']}_t{franja}" for avion in aviones]
+        problem.addConstraint(restriccion_talleres, variables_franja)
+
+
+    def criterio_asignacion_logica(valor, estado_ubicaciones, franja):
+        """
+        Evalúa una asignación tentativa considerando el estado de ocupación de las ubicaciones.
+        - Aviones sin tareas -> Parking libre.
+        - Aviones con tareas de tipo 2 -> Taller especial (SPC) disponible, si no, otro lugar.
+        - Aviones con solo tareas de tipo 1 -> Taller estándar (STD) o especial (SPC) disponible.
+        """
+        posicion = valor["posicion"]
+        tipo_ubicacion = valor["tipo_ubicacion"]
+        tareas_tipo_1 = valor["tareas_tipo_1"]
+        tareas_tipo_2 = valor["tareas_tipo_2"]
+
+        # Verificar si la posición está ocupada
+        ocupacion = estado_ubicaciones[franja][posicion]["ocupado"]
+
+        # Aviones sin tareas deben estar en un parking libre
+        if tareas_tipo_1 == 0 and tareas_tipo_2 == 0:
+            return tipo_ubicacion == "PRK" and not ocupacion
+
+        # Aviones con tareas de tipo 2 deben ir a talleres especiales
+        if tareas_tipo_2 > 0:
+            if tipo_ubicacion == "SPC" and not ocupacion:
+                return True
+            # Si no hay talleres especiales disponibles, permitir cualquier lugar libre
+            return not ocupacion
+
+        # Aviones con solo tareas de tipo 1 pueden estar en STD o SPC
+        if tareas_tipo_1 > 0:
+            return tipo_ubicacion in ["STD", "SPC"] and not ocupacion
+
+        # Si llega aquí, significa que no hay talleres disponibles
+        # Permitir asignación a un parking como opción de respaldo
+        return tipo_ubicacion == "PRK" and not ocupacion
+    
+        
+    # Aplicar el criterio lógico de asignación para cada avión y franja horaria
+    for avion in aviones:
+        for franja in range(franjas_horarias):
+            variable = f"Avion_{avion['id']}_t{franja}"
+
+            def restriccion_asignacion(valor, estado=estado_ubicaciones, t=franja):
+                return criterio_asignacion_logica(valor, estado, t)
+
+            problem.addConstraint(restriccion_asignacion, [variable])
+
+    return problem  
+
+
+def resolver_y_mostrar(problem, max_soluciones):
     soluciones = []
     for solucion in problem.getSolutionIter():
         soluciones.append(solucion)
@@ -93,35 +184,19 @@ def resolver_y_mostrar(problem, max_soluciones=3):
         print(f"Se encontraron {len(soluciones)} soluciones (limitado a {max_soluciones}).")
         for idx, solucion in enumerate(soluciones):
             print(f"\nSolución {idx + 1}:")
-            for key, value in solucion.items():
-                print(f"{key} -> {value}")
+            for variable in sorted(solucion.keys(), key=lambda x: (int(x.split("_")[2][1:]), int(x.split("_")[1]))):
+                print(f"{variable} -> {solucion[variable]}")
 
 def main():
-    """
-    Función principal para ejecutar el código desde la línea de comandos.
-    """
     if len(sys.argv) != 2:
         print("Uso: python CSPMaintenance.py <ruta_archivo_entrada>")
         sys.exit(1)
 
     ruta_entrada = sys.argv[1]
     franjas_horarias, tamano_matriz, talleres_std, talleres_spc, parkings, aviones = leer_entrada(ruta_entrada)
-
-    # Mostrar los datos leídos
-    print("Franjas horarias:", franjas_horarias)
-    print("Tamaño de la matriz:", tamano_matriz)
-    print("Talleres estándar:", talleres_std)
-    print("Talleres especialistas:", talleres_spc)
-    print("Parkings:", parkings)
-    print("Aviones:", aviones)
-
-    print("\nDefiniendo el modelo CSP...")
-    problem = definir_modelo_csp(
-        franjas_horarias, talleres_std, talleres_spc, parkings, aviones
-    )
-
+    problem = definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, aviones)
     print("\nResolviendo el CSP...")
-    resolver_y_mostrar(problem, max_soluciones=3)  # Cambia el número de soluciones aquí según necesidad
+    resolver_y_mostrar(problem, max_soluciones=3)
 
 if __name__ == "__main__":
     main()
