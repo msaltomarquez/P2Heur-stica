@@ -2,124 +2,133 @@ import sys
 from constraint import Problem
 
 def leer_entrada(ruta_entrada):
-    """
-    Lee un archivo de entrada y devuelve la información en variables organizadas.
-    """
     with open(ruta_entrada, "r") as archivo:
         lineas = archivo.readlines()
 
-    # Leer el número de franjas horarias
     franjas_horarias = int(lineas[0].split(":")[1].strip())
+    filas, columnas = map(int, lineas[1].split("x"))
 
-    # Leer el tamaño de la matriz
-    tamano_matriz = tuple(map(int, lineas[1].split("x")))
-
-    # Leer las posiciones de talleres estándar, especialistas y parkings
     def parse_coordenadas(linea):
-        """
-        Convierte una línea con coordenadas en una lista de tuplas.
-        Maneja casos con espacios extra o formatos inesperados.
-        """
         coordenadas = linea.split(":")[1].strip()
-        coordenadas_limpias = coordenadas.replace(" ", "").split(")(")
-        coordenadas_validas = []
-        for coord in coordenadas_limpias:
-            try:
-                coord = coord.strip("()")
-                coordenadas_validas.append(tuple(map(int, coord.split(","))))
-            except ValueError:
-                print(f"Advertencia: Coordenada inválida ignorada: {coord}")
-        return coordenadas_validas
+        return [tuple(map(int, coord.strip("()").split(","))) for coord in coordenadas.replace(" ", "").split(")(")]
 
     talleres_std = parse_coordenadas(lineas[2])
     talleres_spc = parse_coordenadas(lineas[3])
     parkings = parse_coordenadas(lineas[4])
 
-    # Leer los datos de los aviones
     aviones = []
     for linea in lineas[5:]:
         partes = linea.strip().split("-")
-        if len(partes) == 5:
-            aviones.append({
-                "id": int(partes[0]),
-                "tipo": partes[1],
-                "restr": partes[2] == "T",
-                "tareas_tipo_1": int(partes[3]),
-                "tareas_tipo_2": int(partes[4]),
-            })
-        else:
-            print(f"Advertencia: Línea de avión inválida ignorada: {linea}")
+        aviones.append({
+            "id": int(partes[0]),
+            "tipo": partes[1],
+            "restr": partes[2] == "T",
+            "tareas_tipo_1": int(partes[3]),
+            "tareas_tipo_2": int(partes[4]),
+        })
 
-    return franjas_horarias, tamano_matriz, talleres_std, talleres_spc, parkings, aviones
+    return franjas_horarias, filas, columnas, talleres_std, talleres_spc, parkings, aviones
 
-def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, aviones):
-    # Crear el problema CSP
+def crear_mapa(filas, columnas, talleres_std, talleres_spc, parkings):
+    mapa = [["VACIO" for _ in range(columnas)] for _ in range(filas)]
+
+    for x, y in talleres_std:
+        mapa[x][y] = "STD"
+    for x, y in talleres_spc:
+        mapa[x][y] = "SPC"
+    for x, y in parkings:
+        mapa[x][y] = "PRK"
+
+    return mapa
+
+def imprimir_mapa(mapa):
+    print("\nMapa del aeropuerto:")
+    for fila in mapa:
+        print(" ".join(fila))
+
+def adyacentes_validos(pos, filas, columnas):
+    x, y = pos
+    adyacentes = [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]
+    return [(nx, ny) for nx, ny in adyacentes if 0 <= nx < filas and 0 <= ny < columnas]
+
+def definir_modelo_csp(franjas_horarias, filas, columnas, talleres_std, talleres_spc, parkings, aviones, mapa):
     problem = Problem()
 
-    # Precalcular franjas necesarias por avión
-    franjas_necesarias = {
-        avion["id"]: {
-            "tipo_1": avion["tareas_tipo_1"],
-            "tipo_2": avion["tareas_tipo_2"]
-        }
-        for avion in aviones
-    }
-
-    # Definir variables y reducir dominios según franjas necesarias
+    # Definir variables y dominios
     for avion in aviones:
+        tareas_tipo_2 = avion["tareas_tipo_2"]
+        tareas_tipo_1 = avion["tareas_tipo_1"]
+
         for franja in range(franjas_horarias):
             variable = f"Avion_{avion['id']}_t{franja}"
-            dominio = []
-
-            # Determinar dominio por tipo de franja
-            if franjas_necesarias[avion["id"]]["tipo_2"] > 0:
-                dominio = [{"posicion": pos, "tipo_ubicacion": "SPC", "id_avion": avion["id"], "tipo": avion["tipo"]} for pos in talleres_spc]
-                franjas_necesarias[avion["id"]]["tipo_2"] -= 1
-            elif franjas_necesarias[avion["id"]]["tipo_1"] > 0:
-                dominio = [{"posicion": pos, "tipo_ubicacion": "STD", "id_avion": avion["id"], "tipo": avion["tipo"]} for pos in talleres_std]
-                franjas_necesarias[avion["id"]]["tipo_1"] -= 1
+            if tareas_tipo_2 > 0:
+                problem.addVariable(variable, [{"posicion": (x, y), "tarea": "T2", "tipo": avion["tipo"]} for x in range(filas) for y in range(columnas) if mapa[x][y] == "SPC"])
+                tareas_tipo_2 -= 1
+            elif tareas_tipo_1 > 0:
+                problem.addVariable(variable, [{"posicion": (x, y), "tarea": "T1", "tipo": avion["tipo"]} for x in range(filas) for y in range(columnas) if mapa[x][y] in ["STD", "SPC"]])
+                tareas_tipo_1 -= 1
             else:
-                dominio = [{"posicion": pos, "tipo_ubicacion": "PRK", "id_avion": avion["id"], "tipo": avion["tipo"]} for pos in parkings]
+                problem.addVariable(variable, [{"posicion": (x, y), "tarea": "PRK", "tipo": avion["tipo"]} for x in range(filas) for y in range(columnas) if mapa[x][y] == "PRK"])
 
-            problem.addVariable(variable, dominio)
-
-    # Restricción de talleres y parkings: máximo 2 aviones, no 2 jumbos juntos
-    def restriccion_taller_y_parking(*valores):
-        conteo = {}
+    # Restricción: No permitir JMB+JMB y limitar a 2 aviones estándar
+    def restriccion_capacidad(*valores):
+        posiciones = {}
         for valor in valores:
-            posicion = valor["posicion"]
-            tipo_avion = valor["tipo"]
-            if posicion not in conteo:
-                conteo[posicion] = {"total": 0, "jumbo": 0}
-            conteo[posicion]["total"] += 1
-            if tipo_avion == "JMB":
-                conteo[posicion]["jumbo"] += 1
-            if conteo[posicion]["total"] > 2 or conteo[posicion]["jumbo"] > 1:
+            pos = valor["posicion"]
+            tipo = valor["tipo"]
+            if pos not in posiciones:
+                posiciones[pos] = {"jumbos": 0, "estandar": 0}
+            if tipo == "JMB":
+                posiciones[pos]["jumbos"] += 1
+            else:
+                posiciones[pos]["estandar"] += 1
+
+            # Restricciones combinadas: JMB+JMB prohibido, máximo 2 aviones estándar
+            if posiciones[pos]["jumbos"] > 1:
+                return False
+            if posiciones[pos]["jumbos"] > 0 and posiciones[pos]["estandar"] > 1:
+                return False
+            if posiciones[pos]["estandar"] > 2:
                 return False
         return True
 
-    # Aplica la restricción de talleres y parkings
-    for franja in range(franjas_horarias):
-        variables_franja = [f"Avion_{avion['id']}_t{franja}" for avion in aviones]
-        problem.addConstraint(restriccion_taller_y_parking, variables_franja)
+    # Restricción: Un adyacente debe estar vacío y evitar JMB en adyacentes
+    def restriccion_adyacentes(*valores):
+        posiciones = [v["posicion"] for v in valores]
+        for i, valor in enumerate(valores):
+            pos = valor["posicion"]
+            tipo = valor["tipo"]
+            adyacentes = adyacentes_validos(pos, filas, columnas)
+
+            # Verificar al menos un adyacente vacío
+            if all(adj in posiciones for adj in adyacentes):
+                return False
+
+            # Prohibir dos JMB en adyacentes
+            if tipo == "JMB":
+                for j, otro_valor in enumerate(valores):
+                    if i != j and otro_valor["tipo"] == "JMB" and otro_valor["posicion"] in adyacentes:
+                        return False
+        return True
+
+    # Aplicar restricciones
+    for t in range(franjas_horarias):
+        variables = [f"Avion_{avion['id']}_t{t}" for avion in aviones]
+        problem.addConstraint(restriccion_capacidad, variables)
+        problem.addConstraint(restriccion_adyacentes, variables)
 
     return problem
 
-def resolver_y_mostrar(problem, max_soluciones):
-    soluciones = []
-    for solucion in problem.getSolutionIter():
-        soluciones.append(solucion)
-        if len(soluciones) >= max_soluciones:
-            break
-
+def resolver_y_mostrar(problem):
+    soluciones = list(problem.getSolutions())
     if not soluciones:
         print("No se encontraron soluciones.")
     else:
-        print(f"Se encontraron {len(soluciones)} soluciones (limitado a {max_soluciones}).")
+        print(f"Se encontraron {len(soluciones)} soluciones.")
         for idx, solucion in enumerate(soluciones):
             print(f"\nSolución {idx + 1}:")
-            for variable in sorted(solucion.keys(), key=lambda x: (int(x.split("_")[2][1:]), int(x.split("_")[1]))):
-                print(f"{variable} -> {solucion[variable]}")
+            for variable, valor in sorted(solucion.items()):
+                print(f"{variable} -> {valor}")
 
 def main():
     if len(sys.argv) != 2:
@@ -127,10 +136,14 @@ def main():
         sys.exit(1)
 
     ruta_entrada = sys.argv[1]
-    franjas_horarias, tamano_matriz, talleres_std, talleres_spc, parkings, aviones = leer_entrada(ruta_entrada)
-    problem = definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, aviones)
+    franjas_horarias, filas, columnas, talleres_std, talleres_spc, parkings, aviones = leer_entrada(ruta_entrada)
+
+    mapa = crear_mapa(filas, columnas, talleres_std, talleres_spc, parkings)
+    imprimir_mapa(mapa)
+
+    problem = definir_modelo_csp(franjas_horarias, filas, columnas, talleres_std, talleres_spc, parkings, aviones, mapa)
     print("\nResolviendo el CSP...")
-    resolver_y_mostrar(problem, max_soluciones=3)
+    resolver_y_mostrar(problem)
 
 if __name__ == "__main__":
     main()
