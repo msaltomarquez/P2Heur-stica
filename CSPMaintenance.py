@@ -52,7 +52,6 @@ def leer_entrada(ruta_entrada):
 
     return franjas_horarias, tamano_matriz, talleres_std, talleres_spc, parkings, aviones
 
-
 def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, aviones):
     # Crear el problema CSP
     problem = Problem()
@@ -66,83 +65,45 @@ def definir_modelo_csp(franjas_horarias, talleres_std, talleres_spc, parkings, a
         for avion in aviones
     }
 
-
-    # Definir variables y dominios
+    # Definir variables y reducir dominios según franjas necesarias
     for avion in aviones:
         for franja in range(franjas_horarias):
             variable = f"Avion_{avion['id']}_t{franja}"
             dominio = []
 
-            # Construir dominio como lista de diccionarios con información detallada
-            for posicion in parkings + talleres_std + talleres_spc:
-                tipo_ubicacion = "SPC" if posicion in talleres_spc else "STD" if posicion in talleres_std else "PRK"
-                dominio.append({
-                    "posicion": posicion,
-                    "tipo_ubicacion": tipo_ubicacion,
-                    "id_avion": avion["id"]
-                })
+            # Determinar dominio por tipo de franja
+            if franjas_necesarias[avion["id"]]["tipo_2"] > 0:
+                dominio = [{"posicion": pos, "tipo_ubicacion": "SPC", "id_avion": avion["id"], "tipo": avion["tipo"]} for pos in talleres_spc]
+                franjas_necesarias[avion["id"]]["tipo_2"] -= 1
+            elif franjas_necesarias[avion["id"]]["tipo_1"] > 0:
+                dominio = [{"posicion": pos, "tipo_ubicacion": "STD", "id_avion": avion["id"], "tipo": avion["tipo"]} for pos in talleres_std]
+                franjas_necesarias[avion["id"]]["tipo_1"] -= 1
+            else:
+                dominio = [{"posicion": pos, "tipo_ubicacion": "PRK", "id_avion": avion["id"], "tipo": avion["tipo"]} for pos in parkings]
+
             problem.addVariable(variable, dominio)
 
-    # Función de criterio de asignación lógica
-    def criterio_asignacion_logica(valor, franjas_necesarias, franja_actual):
-        tipo_ubicacion = valor["tipo_ubicacion"]
-        id_avion = valor["id_avion"]
-        tareas_tipo_1 = franjas_necesarias[id_avion]["tipo_1"]
-        tareas_tipo_2 = franjas_necesarias[id_avion]["tipo_2"]
-
-        if franja_actual < tareas_tipo_2:  # Franjas para tareas de tipo 2
-            return tipo_ubicacion == "SPC"
-        elif tareas_tipo_2 <= franja_actual < (tareas_tipo_2 + tareas_tipo_1):  # Franjas para tareas de tipo 1
-            return tipo_ubicacion in ["STD", "SPC"]
-        else:  # Franjas restantes: Parking
-            return tipo_ubicacion == "PRK"
-
-    # Aplicar el criterio lógico de asignación para cada avión y franja horaria
-    for avion in aviones:
-        for franja in range(franjas_horarias):
-            variable = f"Avion_{avion['id']}_t{franja}"
-            problem.addConstraint(
-                lambda valor, franja_actual=franja, fn=criterio_asignacion_logica, f_nec=franjas_necesarias: 
-                    fn(valor, f_nec, franja_actual),
-                [variable]
-            )
-
-    # Restricción de talleres: no más de 2 aviones, no más de un JMB
-    def restriccion_talleres(*valores):
+    # Restricción de talleres y parkings: máximo 2 aviones, no 2 jumbos juntos
+    def restriccion_taller_y_parking(*valores):
         conteo = {}
         for valor in valores:
             posicion = valor["posicion"]
-            tipo_avion = valor.get("tipo_avion", "")
-
-            # Inicializar conteo para la posición
+            tipo_avion = valor["tipo"]
             if posicion not in conteo:
-                conteo[posicion] = {"STD": 0, "JMB": 0}
-
-            # Incrementar conteo según el tipo de avión
+                conteo[posicion] = {"total": 0, "jumbo": 0}
+            conteo[posicion]["total"] += 1
             if tipo_avion == "JMB":
-                conteo[posicion]["JMB"] += 1
-            else:
-                conteo[posicion]["STD"] += 1
-
-            # Verificar restricciones dinámicas
-            if conteo[posicion]["JMB"] > 1:
-                return False  # No más de un JMB
-            if conteo[posicion]["JMB"] > 0 and conteo[posicion]["STD"] > 0:
-                return False  # Un JMB no puede coexistir con otros aviones
-            if conteo[posicion]["STD"] + conteo[posicion]["JMB"] > 2:
-                return False  # No más de dos aviones en total
-
+                conteo[posicion]["jumbo"] += 1
+            if conteo[posicion]["total"] > 2 or conteo[posicion]["jumbo"] > 1:
+                return False
         return True
 
-    
+    # Aplica la restricción de talleres y parkings
     for franja in range(franjas_horarias):
         variables_franja = [f"Avion_{avion['id']}_t{franja}" for avion in aviones]
-        problem.addConstraint(restriccion_talleres, variables_franja)
-
-
+        problem.addConstraint(restriccion_taller_y_parking, variables_franja)
 
     return problem
-
 
 def resolver_y_mostrar(problem, max_soluciones):
     soluciones = []
